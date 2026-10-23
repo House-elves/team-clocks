@@ -37,9 +37,10 @@ import java.util.concurrent.Callable;
  * team-clocks: matches the cities in its settings against this machine's time zone database and saves the list for
  * its tab on Elf Desk, which shows each city's time live and lets you plan a time. Without --save it prints the
  * cities with their time now (the desk's dry run). With --action=add-city it adds a city picked in its tab to Team
- * cities in its settings. It reads nothing outside this machine and sends nothing.
+ * cities in its settings, and with --action=add-person a team mate to Team mates. It reads nothing outside this
+ * machine and sends nothing.
  */
-@Command(name = "team-clocks", mixinStandardHelpOptions = true, version = "0.2.0", description = "Matches your team's cities to time zones for Elf Desk")
+@Command(name = "team-clocks", mixinStandardHelpOptions = true, version = "0.3.0", description = "Matches your team's cities to time zones for Elf Desk")
 public class TeamClocks implements Callable<Integer> {
 
     static final ObjectMapper JSON = new ObjectMapper();
@@ -54,10 +55,15 @@ public class TeamClocks implements Callable<Integer> {
     @Option(names = "--save", description = "Save the matched cities under ~/.config/team-clocks/clocks for Elf Desk")
     boolean save;
 
-    @Option(names = "--action", description = "add-city: add the city on stdin ({\"zone\": …, \"label\": …}) to Team cities")
+    @Option(names = "--action", description = "add-city: add the city on stdin ({\"zone\": …, \"label\": …}) to Team cities;"
+            + " add-person: add the team mate on stdin ({\"name\": …, \"place\": …}) to Team mates")
     String action;
 
-    record Clock(String label, String zone) {
+    /** A row: a city, and the team mates who are there. */
+    record Clock(String label, String zone, List<String> people) {
+        Clock(String label, String zone) {
+            this(label, zone, new ArrayList<>());
+        }
     }
 
     record Unmatched(String text, String hint) {
@@ -116,12 +122,58 @@ public class TeamClocks implements Callable<Integer> {
             fromMachine = true;
         }
         if (home == null) home = new Clock("Your time", ZoneId.systemDefault().getId());
+        matchPeople(config, home, cities, unmatched);
         return new Matched(home, fromMachine, cities, unmatched);
+    }
+
+    /**
+     * Team mates, "Anna=Berlin, Raj=Bangalore": each goes under the row whose name is their place, else the first row
+     * (or your own time) in its time zone, else a new row for that city.
+     */
+    static void matchPeople(Config config, Clock home, List<Clock> cities, List<Unmatched> unmatched) {
+        for (String entry : config.people.split(",")) {
+            entry = entry.strip();
+            if (entry.isEmpty()) continue;
+            int eq = entry.indexOf('=');
+            String name = eq < 0 ? "" : clip(entry.substring(0, eq).strip(), 40);
+            String place = eq < 0 ? "" : entry.substring(eq + 1).strip();
+            if (name.isEmpty() || place.isEmpty()) {
+                unmatched.add(new Unmatched(clip(entry, 100), "Write a team mate as Name=City, like Anna=Berlin."));
+                continue;
+            }
+            Clock row = rowFor(place, home, cities).orElse(null);
+            if (row == null) {
+                Optional<Clock> c = match(place);
+                if (c.isEmpty()) {
+                    unmatched.add(new Unmatched(clip(entry, 100), "\"" + clip(place, 60) + "\" isn't one of your cities or a time"
+                            + " zone. Add the city first, or write it as " + name + "=Area/City, like " + name + "=Asia/Kolkata."));
+                    continue;
+                }
+                if (cities.size() + unmatched.size() >= MAX_CITIES) {
+                    System.out.println("Only the first " + MAX_CITIES + " cities are shown");
+                    break;
+                }
+                row = c.get();
+                cities.add(row);
+            }
+            row.people().add(name);
+        }
+    }
+
+    /** The row a team mate's place names: one of the cities by its name, your own city, or a row in its time zone. */
+    static Optional<Clock> rowFor(String place, Clock home, List<Clock> cities) {
+        String p = plain(place);
+        for (Clock c : cities) if (plain(c.label()).equals(p)) return Optional.of(c);
+        if (plain(home.label()).equals(p)) return Optional.of(home);
+        Optional<String> z = place.contains("=") ? Optional.empty() : zone(place);
+        if (z.isEmpty()) return Optional.empty();
+        for (Clock c : cities) if (c.zone().equals(z.get())) return Optional.of(c);
+        return home.zone().equals(z.get()) ? Optional.of(home) : Optional.empty();
     }
 
     static void saveClocks(Config config, Matched m) throws IOException {
         ObjectNode out = JSON.createObjectNode().put("generatedAt", Instant.now().toString())
-                .put("citiesSetting", config.cities).put("homeSetting", config.home);
+                .put("citiesSetting", config.cities).put("homeSetting", config.home).put("peopleSetting", config.people);
         out.set("home", JSON.valueToTree(m.home()));
         out.put("homeFromMachine", m.homeFromMachine());
         out.set("cities", JSON.valueToTree(m.cities()));
@@ -133,6 +185,7 @@ public class TeamClocks implements Callable<Integer> {
 
     /** The tab's Add: {"zone": "Europe/Berlin", "label": "Anna"} on stdin. Adds it to Team cities and matches again. */
     Integer act() throws IOException {
+        if ("add-person".equals(action)) return addPerson();
         if (!"add-city".equals(action)) {
             System.err.println("There's no action " + action);
             return 1;
@@ -166,11 +219,47 @@ public class TeamClocks implements Callable<Integer> {
         String cities = config.cities.isBlank() ? entry : config.cities.strip() + ", " + entry;
         if (cities.length() > 200) return answer("error", "Team cities is full (200 characters): shorten it in Settings first.");
 
-        Config.setCities(cities);
+        Config.set("CITIES", cities);
         config.cities = cities;
         saveClocks(config, matchAll(config));
         System.out.println("Added " + entry + " to your cities");
         return answer("added", entry);
+    }
+
+    /** The tab's Add a team mate: {"name": "Anna", "place": "Berlin"} on stdin, the place being one of its rows. */
+    Integer addPerson() throws IOException {
+        Config config;
+        try {
+            config = Config.load();
+        } catch (IllegalStateException e) {
+            return answer("error", e.getMessage());
+        }
+        JsonNode in = JSON.readTree(System.in);
+        String name = in.path("name").asText("").strip();
+        String place = in.path("place").asText("").strip();
+        // The desk checked both against elf.yaml; check again here, since they end up in the config file.
+        if (!name.matches("[^,=\\p{Cntrl}]{1,40}")) return answer("error", "Give your team mate a name, with no comma or = in it.");
+        if (!place.matches("[^,=\\p{Cntrl}]{1,60}")) return answer("error", "Pick where your team mate is.");
+
+        Matched before = matchAll(config);
+        if (rowFor(place, before.home(), before.cities()).isEmpty()) {
+            return answer("error", "\"" + clip(place, 60) + "\" isn't one of your cities: add it first.");
+        }
+        for (String entry : config.people.split(",")) {
+            int eq = entry.indexOf('=');
+            if (eq > 0 && plain(entry.substring(0, eq)).equals(plain(name))) {
+                return answer("error", name + " is already in your team mates: change where they are in Settings.");
+            }
+        }
+        String entry = name + "=" + place;
+        String people = config.people.isBlank() ? entry : config.people.strip() + ", " + entry;
+        if (people.length() > 200) return answer("error", "Team mates is full (200 characters): shorten it in Settings first.");
+
+        Config.set("PEOPLE", people);
+        config.people = people;
+        saveClocks(config, matchAll(config));
+        System.out.println("Added " + entry + " to your team mates");
+        return answer("added", name + " in " + place);
     }
 
     static Integer answer(String key, String text) throws IOException {
@@ -284,15 +373,19 @@ public class TeamClocks implements Callable<Integer> {
         ZonedDateTime base = now.atZone(ZoneId.of(home.zone()));
         System.out.println();
         System.out.println(home.label() + " (" + home.zone() + "): " + base.format(time) + " "
-                + base.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.ENGLISH));
+                + base.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + who(home));
         for (Clock c : m.cities()) {
             ZonedDateTime t = now.atZone(ZoneId.of(c.zone()));
             System.out.println("- " + c.label() + " (" + c.zone() + "): " + t.format(time) + " "
                     + t.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + ", " + diff(base, t)
-                    + ", " + shade(t, config));
+                    + ", " + shade(t, config) + who(c));
         }
         for (Unmatched u : m.unmatched()) System.out.println("? " + u.text() + ": " + u.hint());
         System.out.println("\nDry run: nothing saved.");
+    }
+
+    static String who(Clock c) {
+        return c.people().isEmpty() ? "" : ": " + String.join(", ", c.people());
     }
 
     static String diff(ZonedDateTime base, ZonedDateTime t) {

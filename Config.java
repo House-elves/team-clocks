@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 /** ~/.config/team-clocks/config: KEY=value lines. Elf Desk writes it from the settings in elf.yaml;
- * the tab's Add rewrites only its CITIES line. */
+ * the tab's Add rewrites only its CITIES or PEOPLE line. */
 public class Config {
 
     static final Path DIR = Path.of(System.getProperty("user.home"), ".config", "team-clocks");
@@ -17,6 +17,7 @@ public class Config {
     /** As written in the settings: the tab compares them with what was matched, to know when to match again. */
     String cities;
     String home;
+    String people;
     int workStart;
     int workEnd;
     boolean hour24;
@@ -33,6 +34,7 @@ public class Config {
         Config c = new Config();
         c.cities = raw.getOrDefault("CITIES", "London, New York, Tokyo");
         c.home = raw.getOrDefault("HOME", "");
+        c.people = raw.getOrDefault("PEOPLE", "");
         c.workStart = hour(raw.getOrDefault("WORK_START", "9"), 0, 23, "Working day starts");
         c.workEnd = hour(raw.getOrDefault("WORK_END", "17"), 1, 24, "Working day ends");
         c.hour24 = !raw.getOrDefault("HOUR_24", "true").equalsIgnoreCase("false");
@@ -40,23 +42,23 @@ public class Config {
     }
 
     /**
-     * Team cities, changed from its tab: only the CITIES line is rewritten, every other line stays as the desk wrote
-     * it. Written whole, then moved into place, with the file's own permissions.
+     * Team cities or Team mates, changed from its tab: only that key's line is rewritten, every other line stays as
+     * the desk wrote it. Written whole, then moved into place, with the file's own permissions.
      */
-    static void setCities(String cities) throws IOException {
+    static void set(String key, String value) throws IOException {
         List<String> lines = Files.exists(FILE) ? new ArrayList<>(Files.readAllLines(FILE)) : new ArrayList<>();
         boolean done = false;
         for (int i = 0; i < lines.size(); i++) {
             String line = lines.get(i).strip();
             int eq = line.indexOf('=');
-            if (!line.startsWith("#") && eq > 0 && line.substring(0, eq).strip().equals("CITIES")) {
+            if (!line.startsWith("#") && eq > 0 && line.substring(0, eq).strip().equals(key)) {
                 // The first one is the one load() reads; later ones would only confuse, so they go.
                 if (done) lines.remove(i--);
-                else lines.set(i, "CITIES=" + cities);
+                else lines.set(i, key + "=" + value);
                 done = true;
             }
         }
-        if (!done) lines.add("CITIES=" + cities);
+        if (!done) lines.add(key + "=" + value);
         Files.createDirectories(DIR);
         Path tmp = FILE.resolveSibling("config.new");
         Files.write(tmp, lines);

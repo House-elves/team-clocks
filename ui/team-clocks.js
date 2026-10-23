@@ -1,9 +1,9 @@
-// team-clocks' tab on Elf Desk: your time and each team mate's city, ticking live, and a planner that shows one moment
+// team-clocks' tab on Elf Desk: your time and each team mate's city, with who is there, ticking live, and a planner that shows one moment
 // of your day in every city. The elf only matches the cities to time zones; the clocks are worked out here.
 // It runs in the desk's sandboxed frame: everything goes through `elf`, and only what elf.yaml declares.
 import { LitElement, html, css, shared, cardStyles, spinner, ago, settingsButton, elf } from '/elf-kit/1/kit.js';
 
-const KEYS = ['CITIES', 'HOME', 'WORK_START', 'WORK_END', 'HOUR_24'];
+const KEYS = ['CITIES', 'PEOPLE', 'HOME', 'WORK_START', 'WORK_END', 'HOUR_24'];
 const DAY = 86_400_000;
 
 /** The parts of a moment in a time zone, as numbers: {y, mo, d, h, mi, wd} (wd: 0 is Sunday). */
@@ -70,8 +70,13 @@ function shadeOf(ms, zone, start, end) {
 async function settings() {
     const v = await elf.values();
     const hour = (s, d, min, max) => { const n = parseInt(s, 10); return n >= min && n <= max ? n : d; };
-    return { cities: v.CITIES ?? '', home: v.HOME ?? '', start: hour(v.WORK_START, 9, 0, 23),
+    return { cities: v.CITIES ?? '', people: v.PEOPLE ?? '', home: v.HOME ?? '', start: hour(v.WORK_START, 9, 0, 23),
         end: hour(v.WORK_END, 17, 1, 24), hour24: v.HOUR_24 !== 'false' };
+}
+
+/** "Berlin (Anna, Ben)", or just "Berlin" when nobody's listed there. */
+function withPeople(r) {
+    return r.people?.length ? `${r.label} (${r.people.join(', ')})` : r.label;
 }
 
 /** Clocks only show minutes: redraw when the minute turns, not every second. */
@@ -99,6 +104,9 @@ class TeamClocksTab extends LitElement {
         _pick: { state: true },     // {country, zone, label} as picked so far
         _adding: { state: true },
         _added: { state: true },    // what the last Add said: {added} or {error}
+        _mate: { state: true },     // {name, place} for Add a team mate
+        _mateAdding: { state: true },
+        _mateAdded: { state: true },
     };
 
     static styles = [shared, css`
@@ -118,6 +126,8 @@ class TeamClocksTab extends LitElement {
         li { padding: 12px 18px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 2px 18px; align-items: center; }
         li .who { font-weight: 600; }
         li .zone { grid-column: 1; font-size: 13px; color: var(--muted); }
+        li .people { grid-column: 1; font-size: 13.5px; }
+        .home .people { flex-basis: 100%; font-size: 14px; }
         li .time { grid-row: 1 / span 2; grid-column: 2; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
         li .info { grid-row: 1 / span 2; grid-column: 3; font-size: 13.5px; text-align: right; min-width: 9rem; }
         li .diff { color: var(--muted); }
@@ -150,6 +160,7 @@ class TeamClocksTab extends LitElement {
         this._plan = null;
         this._loading = true;
         this._pick = { country: '', zone: '', label: '' };
+        this._mate = { name: '', place: '' };
     }
 
     connectedCallback() {
@@ -185,8 +196,8 @@ class TeamClocksTab extends LitElement {
     async _matchIfChanged() {
         const s = this._settings, c = this._clocks;
         if (!s || this._state?.running?.match) return;
-        if (c && c.citiesSetting === s.cities && c.homeSetting === s.home) return;
-        const key = `${s.cities}\n${s.home}`;
+        if (c && c.citiesSetting === s.cities && c.homeSetting === s.home && c.peopleSetting === s.people) return;
+        const key = `${s.cities}\n${s.home}\n${s.people}`;
         if (this._tried === key) return;
         this._tried = key;
         try {
@@ -230,6 +241,54 @@ class TeamClocksTab extends LitElement {
                 : this._added?.added ? html`Added <strong>${this._added.added}</strong> to your cities in Settings.`
                 : 'Your country only lists the cities with a time zone of their own: pick the nearest one, and give it your team mate\'s or your town\'s name.'}</p>
         </section>`;
+    }
+
+    /** A name, then one of the rows (or your own time), then Add: it goes on the end of Team mates in Settings. */
+    _mateAdder() {
+        const c = this._clocks;
+        if (!c) return '';
+        // The place is written as the row's name; your own time from this machine is written as its time zone.
+        const places = [{ value: c.homeFromMachine ? c.home.zone : c.home.label, text: c.homeFromMachine ? 'Your time' : `${c.home.label} (your city)` },
+            ...(c.cities ?? []).map(r => ({ value: r.label, text: r.label }))];
+        const mate = this._mate;
+        return html`<section class="panel add" aria-label="Add a team mate">
+            <div class="controls">
+                <strong>Add a team mate</strong>
+                <label class="small">Name
+                    <input type="text" maxlength="40" placeholder="Anna" .value=${mate.name}
+                        @input=${e => { this._mate = { ...mate, name: e.target.value }; this._mateAdded = null; }}></label>
+                <label class="small">Where
+                    <select @change=${e => { this._mate = { ...mate, place: e.target.value }; this._mateAdded = null; }}>
+                        <option value="" ?selected=${!mate.place}>Pick a city</option>
+                        ${places.map(p => html`<option value=${p.value} ?selected=${mate.place === p.value}>${p.text}</option>`)}
+                    </select></label>
+                <button ?disabled=${!mate.name.trim() || !mate.place || this._mateAdding} @click=${() => this._addMate()}>${this._mateAdding ? spinner : 'Add team mate'}</button>
+            </div>
+            <p class="said" role="status">${this._mateAdded?.error ? html`<span class="error">${this._mateAdded.error}</span>`
+                : this._mateAdded?.added ? html`Added <strong>${this._mateAdded.added}</strong> to your team mates in Settings.`
+                : 'Their name shows under their city, so you can see who is where. Not there yet? Add the city first.'}</p>
+        </section>`;
+    }
+
+    async _addMate() {
+        const name = this._mate.name.trim(), place = this._mate.place;
+        if (/[,=]/.test(name)) {
+            this._mateAdded = { error: 'A name can\'t have a comma or = in it.' };
+            return;
+        }
+        this._mateAdding = true;
+        try {
+            const answer = await elf.act('add-person', { name, place });
+            this._mateAdded = answer && typeof answer === 'object' ? answer : { error: 'It didn\'t say whether it added your team mate.' };
+            if (this._mateAdded.added) {
+                this._mate = { ...this._mate, name: '' };
+                await this._load();
+            }
+        } catch (e) {
+            if (e.message !== 'cancelled') this._mateAdded = { error: `Couldn't add your team mate: ${e.message}` };
+        } finally {
+            this._mateAdding = false;
+        }
     }
 
     async _add() {
@@ -304,7 +363,7 @@ class TeamClocksTab extends LitElement {
             <p class="said">${this._plan
                 ? html`At <strong>${timeText(ms, home, s.hour24)} ${dateText(ms, home)}</strong> your time,
                     ${working.length === rows.length && rows.length ? 'every city is in working hours'
-                        : working.length ? html`<strong>${working.map(r => r.label).join(', ')}</strong> ${working.length === 1 ? 'is' : 'are'} in working hours`
+                        : working.length ? html`<strong>${working.map(withPeople).join(', ')}</strong> ${working.length === 1 ? 'is' : 'are'} in working hours`
                         : 'no city is in working hours'}.`
                 : 'Drag the slider or pick a day and time in your time to see it in every city.'}</p>
         </section>`;
@@ -316,6 +375,7 @@ class TeamClocksTab extends LitElement {
         return html`<li class="panel ${shade.key}">
             <span class="who">${r.label}</span>
             <span class="zone">${r.zone.replaceAll('_', ' ')}</span>
+            ${r.people?.length ? html`<span class="people">${r.people.join(', ')}</span>` : ''}
             <span class="time">${timeText(ms, r.zone, s.hour24)}</span>
             <span class="info">${dayText(ms, r.zone)} · <span class="diff">${diffText(ms, r.zone, home)}</span><br>
                 <span class="tag">${shade.label}</span></span>
@@ -349,17 +409,19 @@ class TeamClocksTab extends LitElement {
                         <span class="day">${dateText(ms, home)}</span>
                         <span class="where">${c.homeFromMachine ? `Your time, from this machine (${home.replaceAll('_', ' ')})`
                             : `Your time in ${c.home.label} (${home.replaceAll('_', ' ')})`}</span>
+                        ${c.home.people?.length ? html`<span class="people">Here too: ${c.home.people.join(', ')}</span>` : ''}
                     </section>
                     ${c.unmatched?.length ? html`<section class="panel fix" role="status">
                         <p><strong>${c.unmatched.length === 1 ? 'One place needs' : `${c.unmatched.length} places need`} fixing in Settings:</strong></p>
                         <ul>${c.unmatched.map(u => html`<li><strong>${u.text}</strong>: ${u.hint}</li>`)}</ul>
-                        <div>${settingsButton(['CITIES', 'HOME'], 'Your team\'s cities')}</div>
+                        <div>${settingsButton(['CITIES', 'PEOPLE', 'HOME'], 'Your team\'s cities')}</div>
                     </section>` : ''}
                     ${rows.length ? html`
                         ${this._planner(home, ms, rows)}
                         <ul aria-label="Your team's cities">${rows.map(r => this._row(r, ms, home))}</ul>`
                         : html`<p class="panel empty">No cities yet. Add your team's cities below, or in Settings, like London, Berlin, New York.</p>`}
                     ${this._adder()}
+                    ${this._mateAdder()}
                 ` : ''}
             </div>
         `;
