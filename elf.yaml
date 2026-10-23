@@ -1,63 +1,68 @@
-# A House Elves elf: what Elf Desk needs to install, set up and run my-elf. AGENTS.md says what each field means.
-name: my-elf
-title: My elf
+# A House Elves elf: what Elf Desk needs to install, set up and run team-clocks. AGENTS.md says what each field means.
+name: team-clocks
+title: Team clocks
 version: 0.1.0
-author: "@your-login"
-description: Reads a news feed and lists what's new since you last looked, for its tab.
-main: MyElf.java
-config: ~/.config/my-elf/config
-tools: [claude]
+author: "@phillip-kruger"
+description: Shows the time and day of the week in each of your team mates' cities next to your own, so you can pick a time that works for everyone.
+main: TeamClocks.java
+config: ~/.config/team-clocks/config
+tools: []
 
 # What it reads and writes, in plain words: the desk shows these before you install it, so they must be true and
 # complete. Name every place outside this machine it reaches, and say when it waits for your click.
 reads:
-  - The feed you give it (RSS or Atom), over the internet.
-  - When Sum up is on, the feed's new items (Claude reads them, with no tools).
+  - "Its own settings: the cities you list and your own city."
+  - The time zone database already on this machine.
 writes:
-  - Nothing outside this machine. What it read is saved for its tab on the desk.
+  - Nothing outside this machine. The matched cities are saved for its tab on the desk.
 
 settings:
-  - key: FEED_URL
-    label: Feed
-    help: The address of an RSS or Atom feed, like https://quarkus.io/feed.xml.
+  - key: CITIES
+    label: Team cities
+    help: "Comma-separated, like: London, Berlin, New York, Bangalore=Asia/Kolkata. Use a city's own name when it has a time zone, or Label=Area/City for any other place or for a team mate's name."
     kind: text
-  - key: MAX_ITEMS
-    label: Items to show
-    help: The newest this many from each read.
+    default: London, New York, Tokyo
+  - key: HOME
+    label: Your city
+    help: Your own time, the base everything is compared to. Leave it empty to use this machine's time zone.
+    kind: text
+    default: ""
+    optional: true
+  - key: WORK_START
+    label: Working day starts
+    help: The hour (0–23) the working day starts in each city, for shading the rows.
+    kind: int
+    min: 0
+    max: 23
+    default: "9"
+  - key: WORK_END
+    label: Working day ends
+    help: The hour (1–24) the working day ends in each city.
     kind: int
     min: 1
-    max: 200
-    default: "30"
-  - key: SUM_UP
-    label: Sum up with Claude
-    help: A line or two about what's new, on top of the list.
+    max: 24
+    default: "17"
+  - key: HOUR_24
+    label: 24-hour clock
+    help: Show 14:05 instead of 2:05 PM.
     kind: bool
-    default: "false"
+    default: "true"
 
 commands:
-  read:
-    label: Read the feed
+  match:
+    label: Match the cities
     args: [--save]
   dry-run:
-    label: Read without saving
+    label: Match without saving
     args: []
 
 dry-run: dry-run
 
-# Its tab (and dashboard card), drawn by ui/my-elf.js in the desk's sandboxed frame. It reads only what it saved.
+# Its tab (and dashboard card), drawn by ui/team-clocks.js in the desk's sandboxed frame. The clocks tick in the tab;
+# the elf only runs to match the cities, once after setup and again when the tab sees the cities changed.
 tab:
-  page: ui/my-elf.js
+  page: ui/team-clocks.js
   card: true
 refresh:
-  command: read
-  schedule: "Mon..Fri *-*-* 07:00"
-data: [runs, done]
-
-actions:
-  done:
-    label: Mark an item read
-    args: [--action=done]
-    ask: false
-    params:
-      # Every value is checked against its pattern before the elf sees it: keep patterns as tight as the value allows.
-      id: {max: 500, pattern: "\\P{Cntrl}{1,500}"}
+  command: match
+data: [clocks]

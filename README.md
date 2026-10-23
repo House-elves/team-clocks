@@ -1,27 +1,38 @@
 <img src="https://raw.githubusercontent.com/House-elves/elf-desk/main/docs/brand/mark.svg" width="72" alt="House Elves logo: a checkmark that ends in an elf's hat">
 
-# elf-template
+# team-clocks
 
-The elf to start a new [House Elves](https://github.com/House-elves) elf from, and the guide to writing one:
-[AGENTS.md](AGENTS.md). Elf Desk's Elf Maker builds new elves from it too.
+A [House Elves](https://github.com/House-elves) elf for [Elf Desk](https://github.com/House-elves/elf-desk):
+**Team clocks** shows the time and day of the week in each of your team mates' cities next to your own, so you can
+pick a time that works for everyone.
 
-As it is, it's a working elf, **My elf**. It reads a news feed (RSS or Atom) and lists its newest items in its tab,
-with what you haven't read first. **Done** marks an item read. With **Sum up with Claude** on, Claude adds a line or
-two about what's new. It reads the feed on weekday mornings, and its dashboard card says how many items are new.
+You list your team's cities in its settings: a city's own name, like `Berlin` or `New York`, or a label with a time
+zone, like `Bangalore=Asia/Kolkata` or `Priya=Asia/Kolkata`, for a place the time zone list doesn't name or to see a
+team mate's name. Its tab shows your own time at the top, then one row per city with its local time, its day, and
+how far ahead or behind you it is ("+6 h, tomorrow"). The clocks tick live, and each row is shaded for working
+hours, after hours (and weekends) or night there. To plan a time, drag the slider or pick a day and time in your
+time: every row shows that moment in its city, and the tab says which cities are in working hours. **Now** goes back
+to the live clocks. Its dashboard card is one line: "Berlin 14:05 Thu · New York 08:05 Thu · Bangalore 18:35 Thu".
 
-- **Reads:** the feed you give it, over the internet. With Sum up on, Claude reads the new items, with no tools.
-- **Writes:** nothing outside this machine. What it read is saved in `~/.config/my-elf/runs/`, and what you marked
-  read in `~/.config/my-elf/done/`.
+It runs once after you add it, to match your cities against the time zone database on your machine, and again
+whenever its tab sees you changed the cities. Anything it can't match is shown with a hint on how to write it.
+Daylight saving is handled by the time zone database.
 
-## Making your own elf from it
+- **Reads:** its own settings (the cities you list and your own city), and the time zone database already on this
+  machine.
+- **Writes:** nothing outside this machine. The matched cities are saved in `~/.config/team-clocks/clocks/`.
+  It never sends anything anywhere.
 
-1. Click **Use this template** on GitHub, or copy the files.
-2. Rename `my-elf` and `MyElf` everywhere, then change what it does. [AGENTS.md](AGENTS.md) says how each part works.
-3. Check it: `jbang https://github.com/House-elves/elf-runner/blob/main/ElfRunner.java --check-elf .`
-4. Push it and tag the repo `house-elf`. It shows up on Elf Desk's **+** page.
+## Adding it
+
+On Elf Desk, click **+**, find **Team clocks**, and add it. Then open its Settings and list your team's cities.
+Leave **Your city** empty to use this machine's time zone.
 
 ## Running it by hand
 
-    mkdir -p ~/.config/my-elf && echo 'FEED_URL=https://quarkus.io/feed.xml' > ~/.config/my-elf/config
-    jbang MyElf.java            # prints what it read, saves nothing
-    jbang MyElf.java --save     # saved for its tab on Elf Desk
+    mkdir -p ~/.config/team-clocks && echo 'CITIES=London, Berlin, New York, Bangalore=Asia/Kolkata' > ~/.config/team-clocks/config
+    jbang TeamClocks.java            # prints each city's time now, saves nothing
+    jbang TeamClocks.java --save     # saved for its tab on Elf Desk
+
+Check it with `jbang https://github.com/House-elves/elf-runner/blob/main/ElfRunner.java --check-elf .`.
+[AGENTS.md](AGENTS.md) says how an elf is built.
