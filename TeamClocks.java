@@ -27,24 +27,35 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.Callable;
 
 /**
  * team-clocks: matches the cities in its settings against this machine's time zone database and saves the list for
  * its tab on Elf Desk, which shows each city's time live and lets you plan a time. Without --save it prints the
- * cities with their time now (the desk's dry run). It reads nothing outside this machine and sends nothing.
+ * cities with their time now (the desk's dry run). With --action=add-city it adds a city picked in its tab to Team
+ * cities in its settings. It reads nothing outside this machine and sends nothing.
  */
-@Command(name = "team-clocks", mixinStandardHelpOptions = true, version = "0.1.0", description = "Matches your team's cities to time zones for Elf Desk")
+@Command(name = "team-clocks", mixinStandardHelpOptions = true, version = "0.2.0", description = "Matches your team's cities to time zones for Elf Desk")
 public class TeamClocks implements Callable<Integer> {
 
     static final ObjectMapper JSON = new ObjectMapper();
     static final Path CLOCKS = Config.DIR.resolve("clocks").resolve("clocks.json");
+    /** The countries and their cities, for the tab's picker. */
+    static final Path PLACES = Config.DIR.resolve("clocks").resolve("places.json");
+    /** Where the time zone database keeps its list of each country's zones, on Linux and macOS. */
+    static final Path ZONE_TAB = Path.of("/usr/share/zoneinfo/zone.tab");
     /** More rows than this is no longer something you can read at a glance (and more than 200 characters fit). */
     static final int MAX_CITIES = 40;
 
     @Option(names = "--save", description = "Save the matched cities under ~/.config/team-clocks/clocks for Elf Desk")
     boolean save;
+
+    @Option(names = "--action", description = "add-city: add the city on stdin ({\"zone\": …, \"label\": …}) to Team cities")
+    String action;
 
     record Clock(String label, String zone) {
     }
@@ -54,6 +65,7 @@ public class TeamClocks implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
+        if (action != null) return act();
         Config config;
         try {
             config = Config.load();
@@ -63,6 +75,26 @@ public class TeamClocks implements Callable<Integer> {
             return 1;
         }
         System.out.println("Matching your cities against this machine's time zones...");
+        Matched m = matchAll(config);
+        System.out.println("Matched " + m.cities().size() + (m.cities().size() == 1 ? " city" : " cities")
+                + (m.unmatched().isEmpty() ? "" : ", " + m.unmatched().size() + " to fix"));
+
+        List<Country> places = places();
+        System.out.println("Found " + places.size() + " countries to pick cities from");
+        if (!save) {
+            print(config, m);
+            return 0;
+        }
+        saveClocks(config, m);
+        write(PLACES, JSON.valueToTree(places));
+        System.out.println("Saved for the Team clocks tab");
+        return 0;
+    }
+
+    record Matched(Clock home, boolean homeFromMachine, List<Clock> cities, List<Unmatched> unmatched) {
+    }
+
+    static Matched matchAll(Config config) {
         List<Clock> cities = new ArrayList<>();
         List<Unmatched> unmatched = new ArrayList<>();
         for (String entry : config.cities.split(",")) {
@@ -84,23 +116,117 @@ public class TeamClocks implements Callable<Integer> {
             fromMachine = true;
         }
         if (home == null) home = new Clock("Your time", ZoneId.systemDefault().getId());
+        return new Matched(home, fromMachine, cities, unmatched);
+    }
 
-        System.out.println("Matched " + cities.size() + (cities.size() == 1 ? " city" : " cities")
-                + (unmatched.isEmpty() ? "" : ", " + unmatched.size() + " to fix"));
-
-        if (!save) {
-            print(config, home, cities, unmatched);
-            return 0;
-        }
+    static void saveClocks(Config config, Matched m) throws IOException {
         ObjectNode out = JSON.createObjectNode().put("generatedAt", Instant.now().toString())
                 .put("citiesSetting", config.cities).put("homeSetting", config.home);
-        out.set("home", JSON.valueToTree(home));
-        out.put("homeFromMachine", fromMachine);
-        out.set("cities", JSON.valueToTree(cities));
-        out.set("unmatched", JSON.valueToTree(unmatched));
+        out.set("home", JSON.valueToTree(m.home()));
+        out.put("homeFromMachine", m.homeFromMachine());
+        out.set("cities", JSON.valueToTree(m.cities()));
+        out.set("unmatched", JSON.valueToTree(m.unmatched()));
         write(CLOCKS, out);
-        System.out.println("Saved for the Team clocks tab");
+    }
+
+    // ---- adding a city from its tab ----
+
+    /** The tab's Add: {"zone": "Europe/Berlin", "label": "Anna"} on stdin. Adds it to Team cities and matches again. */
+    Integer act() throws IOException {
+        if (!"add-city".equals(action)) {
+            System.err.println("There's no action " + action);
+            return 1;
+        }
+        Config config;
+        try {
+            config = Config.load();
+        } catch (IllegalStateException e) {
+            return answer("error", e.getMessage());
+        }
+        JsonNode in = JSON.readTree(System.in);
+        String zone = in.path("zone").asText("").strip();
+        String label = in.path("label").asText("").strip();
+        // The desk checked both against elf.yaml; check again here, since they end up in the config file.
+        if (!ZoneId.getAvailableZoneIds().contains(zone)) return answer("error", "\"" + clip(zone, 60) + "\" isn't a time zone on this machine.");
+        if (!label.matches("[^,=\\p{Cntrl}]{0,60}")) return answer("error", "A name can't have a comma or = in it.");
+
+        // A city's own name reads best in Settings ("Berlin"); anything else needs its zone ("Anna=Europe/Berlin").
+        String city = cityOf(zone);
+        boolean plainCity = (label.isEmpty() || plain(label).equals(plain(city))) && zone(city).orElse("").equals(zone);
+        String entry = plainCity ? (label.isEmpty() ? city : label) : (label.isEmpty() ? city : label) + "=" + zone;
+
+        Matched before = matchAll(config);
+        String shown = label.isEmpty() ? city : label;
+        if (before.cities().stream().anyMatch(c -> c.zone().equals(zone) && plain(c.label()).equals(plain(shown)))) {
+            return answer("error", shown + " is already in your cities.");
+        }
+        if (before.cities().size() + before.unmatched().size() >= MAX_CITIES) {
+            return answer("error", "You have " + MAX_CITIES + " cities already: remove one in Settings first.");
+        }
+        String cities = config.cities.isBlank() ? entry : config.cities.strip() + ", " + entry;
+        if (cities.length() > 200) return answer("error", "Team cities is full (200 characters): shorten it in Settings first.");
+
+        Config.setCities(cities);
+        config.cities = cities;
+        saveClocks(config, matchAll(config));
+        System.out.println("Added " + entry + " to your cities");
+        return answer("added", entry);
+    }
+
+    static Integer answer(String key, String text) throws IOException {
+        // The last line printed is the tab's answer.
+        System.out.println(JSON.writeValueAsString(JSON.createObjectNode().put(key, text)));
         return 0;
+    }
+
+    // ---- the places to pick from ----
+
+    record Place(String zone, String city, String note) {
+    }
+
+    record Country(String code, String name, List<Place> places) {
+    }
+
+    /**
+     * Each country with its time zones, from the zone.tab that comes with the time zone database on this machine.
+     * Without one (as on Windows) the zones are grouped by their area instead: Europe, America, Asia.
+     */
+    static List<Country> places() {
+        Set<String> known = ZoneId.getAvailableZoneIds();
+        Map<String, List<Place>> byCode = new TreeMap<>();
+        if (Files.isReadable(ZONE_TAB)) {
+            try {
+                for (String line : Files.readAllLines(ZONE_TAB)) {
+                    if (line.startsWith("#")) continue;
+                    String[] f = line.split("\t");
+                    if (f.length < 3 || !f[0].matches("[A-Z]{2}") || !known.contains(f[2])) continue;
+                    byCode.computeIfAbsent(f[0], k -> new ArrayList<>())
+                            .add(new Place(f[2], cityOf(f[2]), f.length > 3 ? clip(f[3], 80) : ""));
+                }
+            } catch (IOException e) {
+                byCode.clear();
+            }
+        }
+        List<Country> out = new ArrayList<>();
+        if (!byCode.isEmpty()) {
+            byCode.forEach((code, list) -> {
+                list.sort(Comparator.comparing(Place::city));
+                out.add(new Country(code, Locale.of("", code).getDisplayCountry(Locale.ENGLISH), list));
+            });
+        } else {
+            Map<String, List<Place>> byArea = new TreeMap<>();
+            for (String id : known) {
+                int slash = id.indexOf('/');
+                if (slash < 0 || id.startsWith("SystemV/") || id.startsWith("Etc/") || id.startsWith("US/")) continue;
+                byArea.computeIfAbsent(id.substring(0, slash), k -> new ArrayList<>()).add(new Place(id, cityOf(id), ""));
+            }
+            byArea.forEach((area, list) -> {
+                list.sort(Comparator.comparing(Place::city));
+                out.add(new Country("", area, list));
+            });
+        }
+        out.sort(Comparator.comparing(Country::name));
+        return out;
     }
 
     // ---- matching ----
@@ -151,20 +277,21 @@ public class TeamClocks implements Callable<Integer> {
 
     // ---- the dry run ----
 
-    static void print(Config config, Clock home, List<Clock> cities, List<Unmatched> unmatched) {
+    static void print(Config config, Matched m) {
+        Clock home = m.home();
         Instant now = Instant.now();
         DateTimeFormatter time = DateTimeFormatter.ofPattern(config.hour24 ? "HH:mm" : "h:mm a", Locale.ENGLISH);
         ZonedDateTime base = now.atZone(ZoneId.of(home.zone()));
         System.out.println();
         System.out.println(home.label() + " (" + home.zone() + "): " + base.format(time) + " "
                 + base.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.ENGLISH));
-        for (Clock c : cities) {
+        for (Clock c : m.cities()) {
             ZonedDateTime t = now.atZone(ZoneId.of(c.zone()));
             System.out.println("- " + c.label() + " (" + c.zone() + "): " + t.format(time) + " "
                     + t.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + ", " + diff(base, t)
                     + ", " + shade(t, config));
         }
-        for (Unmatched u : unmatched) System.out.println("? " + u.text() + ": " + u.hint());
+        for (Unmatched u : m.unmatched()) System.out.println("? " + u.text() + ": " + u.hint());
         System.out.println("\nDry run: nothing saved.");
     }
 

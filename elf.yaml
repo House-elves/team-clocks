@@ -1,7 +1,7 @@
 # A House Elves elf: what Elf Desk needs to install, set up and run team-clocks. AGENTS.md says what each field means.
 name: team-clocks
 title: Team clocks
-version: 0.1.0
+version: 0.2.0
 author: "@phillip-kruger"
 description: Shows the time and day of the week in each of your team mates' cities next to your own, so you can pick a time that works for everyone.
 main: TeamClocks.java
@@ -12,9 +12,10 @@ tools: []
 # complete. Name every place outside this machine it reaches, and say when it waits for your click.
 reads:
   - "Its own settings: the cities you list and your own city."
-  - The time zone database already on this machine.
+  - The time zone database already on this machine, with its list of each country's time zones.
 writes:
-  - Nothing outside this machine. The matched cities are saved for its tab on the desk.
+  - Nothing outside this machine. The matched cities and the countries to pick from are saved for its tab on the desk.
+  - Its own settings, when you add a city from its tab with +: the city goes on the end of Team cities.
 
 settings:
   - key: CITIES
@@ -57,6 +58,16 @@ commands:
     args: []
 
 dry-run: dry-run
+
+# The tab's picker (country, then city, then +) adds the city to Team cities. It only changes this elf's own settings.
+actions:
+  add-city:
+    label: Add a city
+    args: [--action=add-city]
+    ask: false
+    params:
+      zone: {max: 60, pattern: "[A-Za-z][A-Za-z0-9_+\\-]*(/[A-Za-z0-9_+\\-]+){1,2}"}
+      label: {max: 60, pattern: "[^,=\\p{Cntrl}]{0,60}", optional: true}
 
 # Its tab (and dashboard card), drawn by ui/team-clocks.js in the desk's sandboxed frame. The clocks tick in the tab;
 # the elf only runs to match the cities, once after setup and again when the tab sees the cities changed.

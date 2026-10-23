@@ -95,6 +95,10 @@ class TeamClocksTab extends LitElement {
         _plan: { state: true },     // null for now, or {day: 0..6 days from today, minutes: 0..1439}, in your time
         _loading: { state: true },
         _error: { state: true },
+        _places: { state: true },   // the countries and their cities, for Add a city
+        _pick: { state: true },     // {country, zone, label} as picked so far
+        _adding: { state: true },
+        _added: { state: true },    // what the last Add said: {added} or {error}
     };
 
     static styles = [shared, css`
@@ -127,6 +131,11 @@ class TeamClocksTab extends LitElement {
         .fix ul { gap: 6px; }
         .fix li { display: block; padding: 0; }
         .empty { color: var(--muted); padding: 18px; margin: 0; }
+        .add { padding: 16px 22px; display: grid; gap: 10px; }
+        .add .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 14px; }
+        .add label { display: grid; gap: 4px; }
+        .add select { max-width: 16rem; }
+        .add .said { margin: 0; font-size: 14px; color: var(--muted); }
         .skeleton.big { height: 40vh; }
         @media (max-width: 600px) {
             li { grid-template-columns: minmax(0, 1fr) auto; }
@@ -140,6 +149,7 @@ class TeamClocksTab extends LitElement {
         new MinuteTick(this);
         this._plan = null;
         this._loading = true;
+        this._pick = { country: '', zone: '', label: '' };
     }
 
     connectedCallback() {
@@ -162,6 +172,8 @@ class TeamClocksTab extends LitElement {
             this._settings = s;
             this._state = state;
             this._matchIfChanged();
+            // Saved by the same run as the clocks; an older version's run didn't save it, so it may not be there yet.
+            this._places = await elf.readJson('clocks', 'places.json').catch(() => null);
         } catch (e) {
             this._error = e.message;
         } finally {
@@ -181,6 +193,64 @@ class TeamClocksTab extends LitElement {
             this._state = await elf.run('match');
         } catch (e) {
             this._error = `Couldn't match the cities: ${e.message}`;
+        }
+    }
+
+    /** Pick a country, then one of its cities, then +: the city goes on the end of Team cities in Settings. */
+    _adder() {
+        const places = this._places;
+        if (!places?.length) return '';
+        const pick = this._pick;
+        const country = places.find(c => (c.code || c.name) === pick.country);
+        const cities = country?.places ?? [];
+        return html`<section class="panel add" aria-label="Add a city">
+            <div class="controls">
+                <strong>Add a city</strong>
+                <label class="small">Country
+                    <select @change=${e => {
+                        const c = places.find(x => (x.code || x.name) === e.target.value);
+                        // A country with one time zone has nothing more to pick.
+                        this._pick = { ...pick, country: e.target.value, zone: c?.places.length === 1 ? c.places[0].zone : '' };
+                        this._added = null;
+                    }}>
+                        <option value="" ?selected=${!pick.country}>Pick a country</option>
+                        ${places.map(c => html`<option value=${c.code || c.name} ?selected=${pick.country === (c.code || c.name)}>${c.name}</option>`)}
+                    </select></label>
+                <label class="small">City
+                    <select ?disabled=${!country} @change=${e => { this._pick = { ...pick, zone: e.target.value }; this._added = null; }}>
+                        ${cities.length === 1 ? '' : html`<option value="" ?selected=${!pick.zone}>Pick a city</option>`}
+                        ${cities.map(p => html`<option value=${p.zone} ?selected=${pick.zone === p.zone}>${p.city}${p.note ? ` (${p.note})` : ''}</option>`)}
+                    </select></label>
+                <label class="small">Name it (optional)
+                    <input type="text" maxlength="60" placeholder=${cities.find(p => p.zone === pick.zone)?.city ?? 'A team mate'}
+                        .value=${pick.label} @input=${e => { this._pick = { ...pick, label: e.target.value }; }}></label>
+                <button ?disabled=${!pick.zone || this._adding} aria-label="Add this city" @click=${() => this._add()}>${this._adding ? spinner : '+'}</button>
+            </div>
+            <p class="said" role="status">${this._added?.error ? html`<span class="error">${this._added.error}</span>`
+                : this._added?.added ? html`Added <strong>${this._added.added}</strong> to your cities in Settings.`
+                : 'Your country only lists the cities with a time zone of their own: pick the nearest one, and give it your team mate\'s or your town\'s name.'}</p>
+        </section>`;
+    }
+
+    async _add() {
+        const { zone, label } = this._pick;
+        const name = label.trim();
+        if (/[,=]/.test(name)) {
+            this._added = { error: 'A name can\'t have a comma or = in it.' };
+            return;
+        }
+        this._adding = true;
+        try {
+            const answer = await elf.act('add-city', name ? { zone, label: name } : { zone });
+            this._added = answer && typeof answer === 'object' ? answer : { error: 'It didn\'t say whether it added the city.' };
+            if (this._added.added) {
+                this._pick = { ...this._pick, label: '' };
+                await this._load();
+            }
+        } catch (e) {
+            if (e.message !== 'cancelled') this._added = { error: `Couldn't add the city: ${e.message}` };
+        } finally {
+            this._adding = false;
         }
     }
 
@@ -288,7 +358,8 @@ class TeamClocksTab extends LitElement {
                     ${rows.length ? html`
                         ${this._planner(home, ms, rows)}
                         <ul aria-label="Your team's cities">${rows.map(r => this._row(r, ms, home))}</ul>`
-                        : html`<p class="panel empty">No cities yet. Add your team's cities in Settings, like London, Berlin, New York.</p>`}
+                        : html`<p class="panel empty">No cities yet. Add your team's cities below, or in Settings, like London, Berlin, New York.</p>`}
+                    ${this._adder()}
                 ` : ''}
             </div>
         `;

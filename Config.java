@@ -1,10 +1,14 @@
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
-/** ~/.config/team-clocks/config: KEY=value lines. Elf Desk writes it from the settings in elf.yaml. */
+/** ~/.config/team-clocks/config: KEY=value lines. Elf Desk writes it from the settings in elf.yaml;
+ * the tab's Add rewrites only its CITIES line. */
 public class Config {
 
     static final Path DIR = Path.of(System.getProperty("user.home"), ".config", "team-clocks");
@@ -33,6 +37,37 @@ public class Config {
         c.workEnd = hour(raw.getOrDefault("WORK_END", "17"), 1, 24, "Working day ends");
         c.hour24 = !raw.getOrDefault("HOUR_24", "true").equalsIgnoreCase("false");
         return c;
+    }
+
+    /**
+     * Team cities, changed from its tab: only the CITIES line is rewritten, every other line stays as the desk wrote
+     * it. Written whole, then moved into place, with the file's own permissions.
+     */
+    static void setCities(String cities) throws IOException {
+        List<String> lines = Files.exists(FILE) ? new ArrayList<>(Files.readAllLines(FILE)) : new ArrayList<>();
+        boolean done = false;
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i).strip();
+            int eq = line.indexOf('=');
+            if (!line.startsWith("#") && eq > 0 && line.substring(0, eq).strip().equals("CITIES")) {
+                // The first one is the one load() reads; later ones would only confuse, so they go.
+                if (done) lines.remove(i--);
+                else lines.set(i, "CITIES=" + cities);
+                done = true;
+            }
+        }
+        if (!done) lines.add("CITIES=" + cities);
+        Files.createDirectories(DIR);
+        Path tmp = FILE.resolveSibling("config.new");
+        Files.write(tmp, lines);
+        if (Files.exists(FILE)) {
+            try {
+                Files.setPosixFilePermissions(tmp, Files.getPosixFilePermissions(FILE));
+            } catch (UnsupportedOperationException e) {
+                // Not a POSIX file system: it keeps the default.
+            }
+        }
+        Files.move(tmp, FILE, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
     }
 
     static int hour(String value, int min, int max, String label) {
