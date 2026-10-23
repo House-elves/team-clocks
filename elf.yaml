@@ -1,7 +1,7 @@
 # A House Elves elf: what Elf Desk needs to install, set up and run team-clocks. AGENTS.md says what each field means.
 name: team-clocks
 title: Team clocks
-version: 0.3.0
+version: 0.4.0
 author: "@phillip-kruger"
 description: Shows the time and day of the week in each of your team mates' cities next to your own, with who is where, so you can pick a time that works for everyone.
 main: TeamClocks.java
@@ -13,8 +13,9 @@ tools: []
 reads:
   - "Its own settings: the cities you list, your team mates and where they are, and your own city."
   - The time zone database already on this machine, with its list of each country's time zones.
+  - The country flags in the flag-icons package (org.mvnpm:flag-icons), which jbang fetches from Maven Central with its other libraries.
 writes:
-  - Nothing outside this machine. The matched cities and the countries to pick from are saved for its tab on the desk.
+  - Nothing outside this machine. The matched cities, their countries' flags and the countries to pick from are saved for its tab on the desk.
   - Its own settings, when you add a city from its tab with +: the city goes on the end of Team cities.
   - Its own settings, when you add a team mate from its tab: they go on the end of Team mates.
 

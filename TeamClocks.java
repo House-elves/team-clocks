@@ -2,6 +2,7 @@
 //JAVA 21+
 //DEPS info.picocli:picocli:4.7.7
 //DEPS com.fasterxml.jackson.core:jackson-databind:2.17.2
+//DEPS org.mvnpm:flag-icons:7.6.0
 //SOURCES Config.java
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -13,6 +14,7 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -24,6 +26,8 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -37,16 +41,22 @@ import java.util.concurrent.Callable;
  * team-clocks: matches the cities in its settings against this machine's time zone database and saves the list for
  * its tab on Elf Desk, which shows each city's time live and lets you plan a time. Without --save it prints the
  * cities with their time now (the desk's dry run). With --action=add-city it adds a city picked in its tab to Team
- * cities in its settings, and with --action=add-person a team mate to Team mates. It reads nothing outside this
- * machine and sends nothing.
+ * cities in its settings, and with --action=add-person a team mate to Team mates. Each city's country flag comes from
+ * the flag-icons package jbang fetched with it. It reads nothing else outside this machine and sends nothing.
  */
-@Command(name = "team-clocks", mixinStandardHelpOptions = true, version = "0.3.0", description = "Matches your team's cities to time zones for Elf Desk")
+@Command(name = "team-clocks", mixinStandardHelpOptions = true, version = "0.4.0", description = "Matches your team's cities to time zones for Elf Desk")
 public class TeamClocks implements Callable<Integer> {
 
     static final ObjectMapper JSON = new ObjectMapper();
     static final Path CLOCKS = Config.DIR.resolve("clocks").resolve("clocks.json");
     /** The countries and their cities, for the tab's picker. */
     static final Path PLACES = Config.DIR.resolve("clocks").resolve("places.json");
+    /** Each shown country's flag, as an image the tab can draw without a network. */
+    static final Path FLAGS = Config.DIR.resolve("clocks").resolve("flags.json");
+    /** Where org.mvnpm:flag-icons keeps its flags: the version in the path is the one in //DEPS. */
+    static final String FLAG_DIR = "META-INF/resources/_static/flag-icons/7.6.0/flags/4x3/";
+    /** The desk reads at most 1.5 MB at once: a few flags with a coat of arms are big, so stop well short of that. */
+    static final int MAX_FLAGS_BYTES = 1024 * 1024;
     /** Where the time zone database keeps its list of each country's zones, on Linux and macOS. */
     static final Path ZONE_TAB = Path.of("/usr/share/zoneinfo/zone.tab");
     /** More rows than this is no longer something you can read at a glance (and more than 200 characters fit). */
@@ -59,10 +69,10 @@ public class TeamClocks implements Callable<Integer> {
             + " add-person: add the team mate on stdin ({\"name\": …, \"place\": …}) to Team mates")
     String action;
 
-    /** A row: a city, and the team mates who are there. */
-    record Clock(String label, String zone, List<String> people) {
+    /** A row: a city, its country's code ("DE", or "" when the time zone has none), and the team mates who are there. */
+    record Clock(String label, String zone, String country, List<String> people) {
         Clock(String label, String zone) {
-            this(label, zone, new ArrayList<>());
+            this(label, zone, countryOf(zone), new ArrayList<>());
         }
     }
 
@@ -179,6 +189,55 @@ public class TeamClocks implements Callable<Integer> {
         out.set("cities", JSON.valueToTree(m.cities()));
         out.set("unmatched", JSON.valueToTree(m.unmatched()));
         write(CLOCKS, out);
+        write(FLAGS, flags(m));
+    }
+
+    // ---- flags ----
+
+    /** The zone.tab's country for each time zone, read once. */
+    static Map<String, String> zoneCountries;
+
+    static String countryOf(String zone) {
+        if (zoneCountries == null) {
+            zoneCountries = new HashMap<>();
+            if (Files.isReadable(ZONE_TAB)) {
+                try {
+                    for (String line : Files.readAllLines(ZONE_TAB)) {
+                        String[] f = line.split("\t");
+                        if (f.length >= 3 && f[0].matches("[A-Z]{2}")) zoneCountries.put(f[2], f[0]);
+                    }
+                } catch (IOException e) {
+                    zoneCountries.clear();
+                }
+            }
+        }
+        return zoneCountries.getOrDefault(zone, "");
+    }
+
+    /**
+     * {"DE": "data:image/svg+xml;base64,…"} for the countries on its rows, from the flag-icons package. The tab shows
+     * them as images, which can't run anything in them. A country it has no flag for, or one past the size limit,
+     * just has none.
+     */
+    static ObjectNode flags(Matched m) {
+        ObjectNode out = JSON.createObjectNode();
+        List<Clock> rows = new ArrayList<>(m.cities());
+        rows.add(0, m.home());
+        int total = 0;
+        for (Clock c : rows) {
+            String code = c.country();
+            if (!code.matches("[A-Z]{2}") || out.has(code)) continue;
+            try (InputStream in = TeamClocks.class.getClassLoader().getResourceAsStream(FLAG_DIR + code.toLowerCase(Locale.ROOT) + ".svg")) {
+                if (in == null) continue;
+                String uri = "data:image/svg+xml;base64," + Base64.getEncoder().encodeToString(in.readAllBytes());
+                if (total + uri.length() > MAX_FLAGS_BYTES) continue;
+                total += uri.length();
+                out.put(code, uri);
+            } catch (IOException e) {
+                // No flag for that country, then.
+            }
+        }
+        return out;
     }
 
     // ---- adding a city from its tab ----
@@ -372,16 +431,23 @@ public class TeamClocks implements Callable<Integer> {
         DateTimeFormatter time = DateTimeFormatter.ofPattern(config.hour24 ? "HH:mm" : "h:mm a", Locale.ENGLISH);
         ZonedDateTime base = now.atZone(ZoneId.of(home.zone()));
         System.out.println();
-        System.out.println(home.label() + " (" + home.zone() + "): " + base.format(time) + " "
+        System.out.println(home.label() + " (" + where(home) + "): " + base.format(time) + " "
                 + base.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + who(home));
         for (Clock c : m.cities()) {
             ZonedDateTime t = now.atZone(ZoneId.of(c.zone()));
-            System.out.println("- " + c.label() + " (" + c.zone() + "): " + t.format(time) + " "
+            System.out.println("- " + c.label() + " (" + where(c) + "): " + t.format(time) + " "
                     + t.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + ", " + diff(base, t)
                     + ", " + shade(t, config) + who(c));
         }
         for (Unmatched u : m.unmatched()) System.out.println("? " + u.text() + ": " + u.hint());
         System.out.println("\nDry run: nothing saved.");
+    }
+
+    /** "Europe/Berlin, flag of Germany", as the tab shows it. */
+    static String where(Clock c) {
+        if (c.country().isEmpty()) return c.zone();
+        boolean flag = TeamClocks.class.getClassLoader().getResource(FLAG_DIR + c.country().toLowerCase(Locale.ROOT) + ".svg") != null;
+        return c.zone() + ", " + (flag ? "flag of " : "") + Locale.of("", c.country()).getDisplayCountry(Locale.ENGLISH);
     }
 
     static String who(Clock c) {

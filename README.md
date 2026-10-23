@@ -18,7 +18,7 @@ of your cities (or your own time) and click **Add team mate**. Their names show 
 a city if they share one, and the planner names them too ("Berlin (Anna, Ben) is in working hours"). A team mate's
 place can also be any time zone, like `Kim=Asia/Seoul`: if it isn't one of your cities yet, it gets a row of its
 own. Its
-tab shows your own time at the top, then one row per city with its local time, its day, and
+tab shows your own time at the top, then one row per city with its country's flag, its local time, its day, and
 how far ahead or behind you it is ("+6 h, tomorrow"). The clocks tick live, and each row is shaded for working
 hours, after hours (and weekends) or night there. To plan a time, drag the slider or pick a day and time in your
 time: every row shows that moment in its city, and the tab says which cities are in working hours. **Now** goes back
@@ -30,8 +30,10 @@ Daylight saving is handled by the time zone database.
 
 - **Reads:** its own settings (the cities you list, your team mates and where they are, and your own city), and the time zone database already on this
   machine, with its list of each country's time zones (`/usr/share/zoneinfo/zone.tab`; without it, the picker
-  groups the cities by area, like Europe or America).
-- **Writes:** nothing outside this machine. The matched cities and the countries to pick from are saved in
+  groups the cities by area, like Europe or America, and the rows have no flags). The flags come from the
+  [flag-icons](https://github.com/lipis/flag-icons) package (`org.mvnpm:flag-icons`), which jbang fetches from
+  Maven Central with its other libraries; nothing is fetched from its tab.
+- **Writes:** nothing outside this machine. The matched cities, the flags of their countries and the countries to pick from are saved in
   `~/.config/team-clocks/clocks/`. Adding a city from its tab changes **Team cities** in its own settings
   (only that line of `~/.config/team-clocks/config`), and adding a team mate changes **Team mates** (only its
   `PEOPLE` line). It never sends anything anywhere.

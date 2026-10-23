@@ -79,6 +79,13 @@ function withPeople(r) {
     return r.people?.length ? `${r.label} (${r.people.join(', ')})` : r.label;
 }
 
+/** A row's country flag, saved by the elf from flag-icons as a data: image (the tab has no network), or nothing. */
+function flagOf(flags, r) {
+    const src = r?.country && flags?.[r.country];
+    return typeof src === 'string' && src.startsWith('data:image/svg+xml;base64,')
+        ? html`<img class="flag" src=${src} alt="" title=${r.country}>` : '';
+}
+
 /** Clocks only show minutes: redraw when the minute turns, not every second. */
 class MinuteTick {
     constructor(host) { this.host = host; host.addController(this); }
@@ -95,6 +102,7 @@ class TeamClocksTab extends LitElement {
 
     static properties = {
         _clocks: { state: true },
+        _flags: { state: true },    // {"DE": "data:image/svg+xml;base64,…"}
         _settings: { state: true },
         _state: { state: true },
         _plan: { state: true },     // null for now, or {day: 0..6 days from today, minutes: 0..1439}, in your time
@@ -124,7 +132,9 @@ class TeamClocksTab extends LitElement {
         .plan .said strong { color: var(--ink); }
         ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
         li { padding: 12px 18px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 2px 18px; align-items: center; }
-        li .who { font-weight: 600; }
+        li .who { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+        .flag { width: 1.33em; height: 1em; flex: none; border-radius: 2px; box-shadow: 0 0 0 1px var(--line); object-fit: cover; }
+        .home .flag { width: 32px; height: 24px; align-self: center; }
         li .zone { grid-column: 1; font-size: 13px; color: var(--muted); }
         li .people { grid-column: 1; font-size: 13.5px; }
         .home .people { flex-basis: 100%; font-size: 14px; }
@@ -185,6 +195,8 @@ class TeamClocksTab extends LitElement {
             this._matchIfChanged();
             // Saved by the same run as the clocks; an older version's run didn't save it, so it may not be there yet.
             this._places = await elf.readJson('clocks', 'places.json').catch(() => null);
+            // Saved with the clocks since 0.4.0: without it the rows just have no flags.
+            this._flags = await elf.readJson('clocks', 'flags.json').catch(() => null);
         } catch (e) {
             this._error = e.message;
         } finally {
@@ -373,7 +385,7 @@ class TeamClocksTab extends LitElement {
         const s = this._settings;
         const shade = shadeOf(ms, r.zone, s.start, s.end);
         return html`<li class="panel ${shade.key}">
-            <span class="who">${r.label}</span>
+            <span class="who">${flagOf(this._flags, r)}${r.label}</span>
             <span class="zone">${r.zone.replaceAll('_', ' ')}</span>
             ${r.people?.length ? html`<span class="people">${r.people.join(', ')}</span>` : ''}
             <span class="time">${timeText(ms, r.zone, s.hour24)}</span>
@@ -405,6 +417,7 @@ class TeamClocksTab extends LitElement {
                     : 'Add your team\'s cities in Settings, then Match the cities.'}</p>` : ''}
                 ${c && s ? html`
                     <section class="panel home" aria-label="Your time">
+                        ${flagOf(this._flags, c.home)}
                         <span class="time">${timeText(ms, home, s.hour24)}</span>
                         <span class="day">${dateText(ms, home)}</span>
                         <span class="where">${c.homeFromMachine ? `Your time, from this machine (${home.replaceAll('_', ' ')})`
